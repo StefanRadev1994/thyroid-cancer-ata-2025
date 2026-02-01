@@ -392,10 +392,9 @@ ${JSON.stringify(hints, null, 2)}
                 type="text"
                 inputMode="numeric"
                 autoComplete="off"
-                defaultValue={formData.patientAge}
-                onInput={(e)=> {
-                  const v = e.currentTarget.value.replace(/[^0-9]/g,"").slice(0,3);
-                  e.currentTarget.value = v;
+                value={formData.patientAge}
+                onChange={(e)=> {
+                  const v = e.target.value.replace(/[^0-9]/g, "").slice(0, 3);
                   update("patientAge", v);
                 }}
                 placeholder="e.g., 52"
