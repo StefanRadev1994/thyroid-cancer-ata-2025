@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ATA 2025 Thyroid Cancer Assistant</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel for JSX in-browser -->
+  <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
+</head>
+
+<body class="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useMemo, useState } = React;
+
+    // Default: safe demo mode for GitHub Pages
+    window.ATA_APP_MODE = window.ATA_APP_MODE || "mock"; // "mock" | "live"
+    window.ATA_APP_API_ENDPOINT = window.ATA_APP_API_ENDPOINT || "/api/recommend";
+
+    const HISTOLOGY_OPTIONS = [
+      "Papillary Thyroid Cancer (PTC)",
+      "Follicular Thyroid Cancer (FTC)",
+      "Oncocytic Thyroid Cancer (OTC)",
+      "High-Grade Non-Anaplastic Thyroid Cancer (HGNATC)",
+      "NIFTP",
+      "Medullary Thyroid Cancer (MTC)"
+    ];
+
+    function pickRisk({ histology, tStage, nStage, mStage, activeSurveillance }) {
+      if (activeSurveillance === "Yes") return "Low";
+      const h = histology || "";
+      if (h.includes("(MTC)") || h.includes("High-Grade")) return "High";
+      if (mStage === "1") return "High";
+      if (tStage === "4a" || tStage === "4b") return "High";
+      if (nStage === "1b") return "High";
+      if (tStage === "3a" || tStage === "3b" || nStage === "1a") return "Intermediate-High";
+      if (tStage === "2" || tStage === "1b") return "Low-Intermediate";
+      return "Low";
+    }
+
+    function pickResponse({ activeSurveillance, suspiciousUS, structuralDisease, tgTrend, tgAbTrend }) {
+      if (activeSurveillance === "Yes") return "Indeterminate";
+      if (structuralDisease === "Yes" || suspiciousUS === "Yes") return "Structurally Incomplete";
+      if (tgTrend === "Rising" || tgAbTrend === "Rising") return "Biochemically Incomplete";
+      return "Excellent";
+    }
+
+    function pickTSHTarget({ risk, response }) {
+      if (response === "Structurally Incomplete" || response === "Biochemically Incomplete") return "Below normal range";
+      if (risk === "Intermediate-High" || risk === "High") return "Below normal range";
+      return "Within normal range";
+    }
+
+    function shouldConsiderRepeatRAI({ receivedRAI, response, structuralDisease, suspiciousUS, tgTrend, tgAbTrend }) {
+      if (receivedRAI !== "Yes") return false;
+      if (response === "Structurally Incomplete" || response === "Biochemically Incomplete") return true;
+      if (structuralDisease === "Yes" || suspiciousUS === "Yes" || tgTrend === "Rising" || tgAbTrend === "Rising") return true;
+      return false;
+    }
+
+    function shouldConsiderInitialRAI({ receivedRAI, risk, surgeryType, histology }) {
+      if (receivedRAI === "Yes") return false;
+      if (surgeryType !== "Total Thyroidectomy") return false;
+      if ((histology || "").includes("(MTC)")) return false;
+      return (risk === "Intermediate-High" || risk === "High");
+    }
+
+    function buildMockRecommendation(payload) {
+      const risk = pickRisk(payload);
+      const response = pickResponse(payload);
+      const tsh = pickTSHTarget({ risk, response });
+
+      const repeatRAI = shouldConsiderRepeatRAI({ ...payload, response });
+      const initialRAI = shouldConsiderInitialRAI({ ...payload, risk });
+
+      let immediate = [];
+      if (payload.activeSurveillance === "Yes") {
+        immediate = [
+          "🩻 Neck ultrasound at 6–12 months (then yearly if stable)",
+          "📏 Document size/location; confirm no high-risk features",
+          "🧠 Agree triggers for intervention (growth/nodes/symptoms)",
+          "🧪 Optional baseline Tg/TgAb; follow per local practice",
+          "📅 Follow-up visit in 6–12 months"
+        ];
+      } else {
+        if (response === "Structurally Incomplete") immediate.push("🩻 Confirm structural disease (US ± FNA where appropriate)");
+        else if (response === "Biochemically Incomplete") immediate.push("🧪 Confirm trend (same assay); repeat Tg/TgAb if uncertain");
+        else immediate.push("✅ Continue risk-adapted surveillance (labs ± ultrasound)");
+
+        if (repeatRAI) immediate.push("☢️ Consider REPEAT RAI if disease is RAI-avid");
+        else if (initialRAI) immediate.push("☢️ Consider INITIAL RAI (risk-adapted) after pathology review");
+        else if ((payload.histology || "").includes("(MTC)")) immediate.push("🧬 MTC: calcitonin/CEA trend; RET testing; RAI not indicated");
+        else immediate.push("💊 Optimize levothyroxine per TSH target and tolerability");
+
+        immediate.push("🧾 Document ATA risk tier + response category");
+        immediate.push("📅 Set follow-up frequency per response category");
+        immediate.push("🧠 MDT discussion for complex/persistent disease");
+      }
+
+      let longTerm = "🧭 Risk-adapted monitoring with de-escalation if stable.";
+      if (payload.activeSurveillance === "Yes") longTerm = "🧭 Continue active surveillance; intervene if growth or nodal disease develops.";
+      else if (response === "Excellent" && (risk === "Low" || risk === "Low-Intermediate")) longTerm = "🌿 De-escalate over time if sustained excellent response.";
+      else if (response === "Indeterminate") longTerm = "🔁 Reassess to clarify response; adjust intensity based on trends.";
+      else longTerm = "🧩 Re-stage as needed; consider MDT for persistent/recurrent disease.";
+
+      return [
+        `ATA_RISK: ${risk}`,
+        `RESPONSE: ${response}`,
+        `TSH_TARGET: ${tsh}`,
+        ``,
+        `IMMEDIATE_MANAGEMENT:`,
+        ...immediate.slice(0,5).map((x,i)=>`${i+1}. ${x}`),
+        ``,
+        `LONG_TERM_STRATEGY:`,
+        longTerm
+      ].join("\n");
+    }
+
+    async function callBackendClaude(prompt) {
+      const res = await fetch(window.ATA_APP_API_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] })
+      });
+      if (!res.ok) throw new Error(`Backend error (${res.status})`);
+      const data = await res.json();
+      if (data && typeof data.text === "string") return data.text;
+      throw new Error("Unexpected backend response format (expected {text}).");
+    }
+
+    function buildStrictPrompt(formData, hints) {
+      return `
+You are an expert endocrinologist. Use ONLY the ATA 2025 thyroid cancer management guidelines (adult).
+Return STRICTLY in the exact format below, with NO extra sections, NO citations, NO commentary.
+
+ATA_RISK: Low | Low-Intermediate | Intermediate-High | High
+RESPONSE: Excellent | Indeterminate | Biochemically Incomplete | Structurally Incomplete
+TSH_TARGET: Within normal range | Below normal range
+
+IMMEDIATE_MANAGEMENT:
+1. [emoji + concise action]
+2. [emoji + concise action]
+3. [emoji + concise action]
+4. [emoji + concise action]
+5. [emoji + concise action]
+
+LONG_TERM_STRATEGY:
+[1–2 short sentences, include 1–2 emojis]
+
+Inputs:
+${JSON.stringify(formData, null, 2)}
+
+Hints:
+${JSON.stringify(hints, null, 2)}
+`.trim();
+    }
+
+    function SectionTitle({ icon, title, subtitle }) {
+      return (
+        <div className="flex items-start gap-3 mb-5">
+          <div className="w-11 h-11 rounded-2xl bg-slate-900/5 flex items-center justify-center text-xl">
+            {icon}
+          </div>
+          <div>
+            <div className="text-xl font-extrabold text-slate-900">{title}</div>
+            <div className="text-sm text-slate-500">{subtitle}</div>
+          </div>
+        </div>
+      );
+    }
+
+    function StepDot({ active, done, label }) {
+      const base = "w-9 h-9 rounded-full flex items-center justify-center font-extrabold";
+      const cls = done ? "bg-emerald-600 text-white" : active ? "bg-indigo-600 text-white ring-4 ring-indigo-200" : "bg-slate-200 text-slate-500";
+      return (
+        <div className="flex flex-col items-center gap-1">
+          <div className={`${base} ${cls}`}>{done ? "✓" : label}</div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [step, setStep] = useState(1);
+      const [loading, setLoading] = useState(false);
+      const [recommendation, setRecommendation] = useState(null);
+      const [showMore, setShowMore] = useState(false);
+      const [mode, setMode] = useState(window.ATA_APP_MODE);
+      const [formVersion, setFormVersion] = useState(1); // forces remount on reset (for uncontrolled inputs)
+
+      const [formData, setFormData] = useState({
+        patientAge: "",
+        yearOfOperation: "",
+        managementType: "",
+        surgeryType: "",
+        asEligibility: { presumedPTCmicro: "", noClinicalNodes: "", noETEorInvasion: "", notNearCritical: "" },
+        histology: "",
+        tnmStaging: { t: "", n: "", m: "" },
+        receivedRAI: "",
+        tgTrend: "",
+        tgAbTrend: "",
+        structuralDisease: "",
+        labResults: { tg: "", tsh: "" },
+        suspiciousUS: "",
+        ultrasoundFindings: ""
+      });
+
+      const isAS = formData.managementType === "Active Surveillance";
+      const totalSteps = 7;
+
+      const update = (field, value) => setFormData(prev => ({ ...prev, [field]: value }));
+      const updateNested = (path, value) => {
+        const [a,b] = path.split(".");
+        setFormData(prev => ({ ...prev, [a]: { ...prev[a], [b]: value } }));
+      };
+
+      const canProceed = useMemo(() => {
+        switch(step) {
+          case 1: return formData.patientAge !== "";
+          case 2:
+            if (!formData.managementType) return false;
+            if (formData.managementType === "Surgery") return !!formData.surgeryType;
+            const e = formData.asEligibility;
+            return e.presumedPTCmicro==="Yes" && e.noClinicalNodes==="Yes" && e.noETEorInvasion==="Yes" && e.notNearCritical==="Yes";
+          case 3: return isAS ? true : !!formData.histology;
+          case 4:
+            if (isAS) return true;
+            return !!formData.tnmStaging.t && !!formData.tnmStaging.n && !!formData.tnmStaging.m;
+          case 5:
+            if (isAS) return true;
+            if (!formData.receivedRAI) return false;
+            return !!formData.tgTrend && !!formData.tgAbTrend && !!formData.structuralDisease;
+          case 6:
+            if (isAS) return true;
+            return !!formData.suspiciousUS;
+          case 7: return true;
+          default: return false;
+        }
+      }, [step, formData, isAS]);
+
+      const computed = useMemo(() => {
+        const hints = {
+          isActiveSurveillance: isAS,
+          computedRiskTier: pickRisk({
+            histology: formData.histology,
+            tStage: formData.tnmStaging.t,
+            nStage: formData.tnmStaging.n,
+            mStage: formData.tnmStaging.m,
+            activeSurveillance: isAS ? "Yes" : "No"
+          }),
+          computedResponse: pickResponse({
+            activeSurveillance: isAS ? "Yes" : "No",
+            suspiciousUS: formData.suspiciousUS,
+            structuralDisease: formData.structuralDisease,
+            tgTrend: formData.tgTrend,
+            tgAbTrend: formData.tgAbTrend
+          })
+        };
+        hints.considerRepeatRAI = shouldConsiderRepeatRAI({
+          receivedRAI: formData.receivedRAI,
+          response: hints.computedResponse,
+          structuralDisease: formData.structuralDisease,
+          suspiciousUS: formData.suspiciousUS,
+          tgTrend: formData.tgTrend,
+          tgAbTrend: formData.tgAbTrend
+        });
+        hints.considerInitialRAI = shouldConsiderInitialRAI({
+          receivedRAI: formData.receivedRAI,
+          risk: hints.computedRiskTier,
+          surgeryType: formData.surgeryType,
+          histology: formData.histology
+        });
+        hints.computedTSHTarget = pickTSHTarget({ risk: hints.computedRiskTier, response: hints.computedResponse });
+        return hints;
+      }, [formData, isAS]);
+
+      const resetAll = () => {
+        setRecommendation(null);
+        setShowMore(false);
+        setStep(1);
+        setFormVersion(v => v + 1);
+        setFormData({
+          patientAge: "",
+          yearOfOperation: "",
+          managementType: "",
+          surgeryType: "",
+          asEligibility: { presumedPTCmicro: "", noClinicalNodes: "", noETEorInvasion: "", notNearCritical: "" },
+          histology: "",
+          tnmStaging: { t: "", n: "", m: "" },
+          receivedRAI: "",
+          tgTrend: "",
+          tgAbTrend: "",
+          structuralDisease: "",
+          labResults: { tg: "", tsh: "" },
+          suspiciousUS: "",
+          ultrasoundFindings: ""
+        });
+      };
+
+      const generateRecommendation = async () => {
+        setLoading(true);
+        setRecommendation(null);
+        try {
+          if (mode === "live") {
+            const prompt = buildStrictPrompt(formData, computed);
+            const text = await callBackendClaude(prompt);
+            setRecommendation(text);
+          } else {
+            const payload = {
+              activeSurveillance: isAS ? "Yes" : "No",
+              histology: formData.histology,
+              tStage: formData.tnmStaging.t,
+              nStage: formData.tnmStaging.n,
+              mStage: formData.tnmStaging.m,
+              receivedRAI: formData.receivedRAI,
+              tgTrend: formData.tgTrend,
+              tgAbTrend: formData.tgAbTrend,
+              structuralDisease: formData.structuralDisease,
+              suspiciousUS: formData.suspiciousUS,
+              surgeryType: formData.surgeryType
+            };
+            setRecommendation(buildMockRecommendation(payload));
+          }
+        } catch (e) {
+          setRecommendation(`Error: ${e.message}`);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const Header = () => (
+        <div className="text-center mb-7">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-extrabold tracking-wide">
+            🧠 ATA 2025 • Thyroid Cancer
+          </div>
+          <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 mt-3">Clinical Assistant</h1>
+          <p className="text-slate-600 text-lg mt-2">Fast, minimal, print-friendly recommendations</p>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <span className={`px-3 py-1 rounded-full text-xs font-extrabold ${mode === "mock" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+              {mode === "mock" ? "MOCK mode (GitHub Pages)" : "LIVE mode (backend required)"}
+            </span>
+            <button
+              className="px-3 py-1 rounded-full text-xs font-extrabold bg-slate-200 text-slate-700 hover:bg-slate-300"
+              onClick={() => setMode(mode === "mock" ? "live" : "mock")}
+              title="Mock mode works on GitHub Pages. Live mode requires your own secure backend."
+            >
+              Toggle
+            </button>
+          </div>
+        </div>
+      );
+
+      const Progress = () => (
+        <div className="mb-6">
+          <div className="flex items-center justify-between">
+            {[1,2,3,4,5,6,7].map(s => (
+              <div key={s} className="flex items-center">
+                <StepDot active={s===step} done={s<step} label={s} />
+                {s<7 && <div className={`h-1 w-8 md:w-12 mx-1 ${s<step ? "bg-emerald-600" : "bg-slate-200"}`} />}
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex justify-between text-xs text-slate-500">
+            <span>Demo</span><span>Approach</span><span>Histo</span><span>TNM</span><span>RAI</span><span>Labs</span><span>US</span>
+          </div>
+        </div>
+      );
+
+      const Card = ({ children }) => (
+        <div className="bg-white rounded-3xl shadow-[0_20px_45px_rgba(15,23,42,0.10)] p-6 md:p-8">
+          {children}
+        </div>
+      );
+
+      // ✅ Fix: use UNCONTROLLED inputs for age/year so focus never drops while typing
+      const Step1 = () => (
+        <Card key={`step1-${formVersion}`}>
+          <SectionTitle icon="🧑‍⚕️" title="Patient demographics" subtitle="Typing should be smooth now ✅" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-extrabold text-slate-700">Age (years)</label>
+              <input
+                className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                defaultValue={formData.patientAge}
+                onInput={(e)=> {
+                  const v = e.currentTarget.value.replace(/[^0-9]/g,"").slice(0,3);
+                  e.currentTarget.value = v;
+                  update("patientAge", v);
+                }}
+                placeholder="e.g., 52"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-extrabold text-slate-700">Year of operation (optional for AS)</label>
+              <input
+                className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                defaultValue={formData.yearOfOperation}
+                onInput={(e)=> {
+                  const v = e.currentTarget.value.replace(/[^0-9]/g,"").slice(0,4);
+                  e.currentTarget.value = v;
+                  update("yearOfOperation", v);
+                }}
+                placeholder="e.g., 2024"
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 text-xs text-slate-500">
+            Tip: you can proceed after entering Age. Year is optional if you plan Active Surveillance.
+          </div>
+        </Card>
+      );
+
+      const Step2 = () => (
+        <Card>
+          <SectionTitle icon="🧭" title="Management approach" subtitle="Surgery vs Active Surveillance" />
+          <div className="space-y-3">
+            {["Surgery", "Active Surveillance"].map(opt => (
+              <label key={opt} className={`flex items-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                formData.managementType === opt ? "border-indigo-600 bg-indigo-50" : "border-slate-200 hover:border-indigo-300"
+              }`}>
+                <input
+                  type="radio"
+                  name="managementType"
+                  className="w-5 h-5"
+                  checked={formData.managementType === opt}
+                  onChange={() => {
+                    update("managementType", opt);
+                    if (opt === "Active Surveillance") {
+                      update("surgeryType", "");
+                      update("histology", "");
+                      update("tnmStaging", { t:"", n:"", m:"" });
+                      update("receivedRAI", "");
+                    }
+                  }}
+                />
+                <span className="ml-3 font-extrabold text-slate-800">{opt}</span>
+                {opt === "Active Surveillance" && (
+                  <span className="ml-auto px-3 py-1 rounded-full text-xs font-extrabold bg-amber-100 text-amber-700">
+                    Presumed cT1aN0M0 PTC
+                  </span>
+                )}
+              </label>
+            ))}
+          </div>
+
+          {formData.managementType === "Surgery" && (
+            <div className="mt-6">
+              <div className="text-sm font-extrabold text-slate-700">Surgery type</div>
+              <div className="mt-3 space-y-3">
+                {["Total Thyroidectomy", "Lobectomy (Hemithyroidectomy)"].map(sx => (
+                  <label key={sx} className={`flex items-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                    formData.surgeryType === sx ? "border-emerald-600 bg-emerald-50" : "border-slate-200 hover:border-emerald-300"
+                  }`}>
+                    <input type="radio" name="surgeryType" className="w-5 h-5"
+                      checked={formData.surgeryType === sx} onChange={() => update("surgeryType", sx)} />
+                    <span className="ml-3 font-bold text-slate-800">{sx}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {formData.managementType === "Active Surveillance" && (
+            <div className="mt-6 p-5 bg-amber-50 border border-amber-200 rounded-2xl">
+              <div className="font-extrabold text-amber-900">Eligibility checklist (all must be “Yes”)</div>
+              <div className="mt-4 space-y-4">
+                {[
+                  ["presumedPTCmicro", "Presumed papillary microcarcinoma ≤1 cm (cT1a)"],
+                  ["noClinicalNodes", "No clinical/radiologic nodal disease (cN0)"],
+                  ["noETEorInvasion", "No evidence of ETE/invasion (no high-risk imaging features)"],
+                  ["notNearCritical", "Not adjacent to trachea/RLN/critical structures requiring early surgery"]
+                ].map(([k, label]) => (
+                  <div key={k}>
+                    <div className="text-sm font-bold text-amber-900">{label}</div>
+                    <div className="mt-2 flex gap-3">
+                      {["Yes","No"].map(v => (
+                        <label key={v} className={`flex items-center gap-2 px-3 py-2 rounded-2xl border cursor-pointer ${
+                          formData.asEligibility[k] === v ? "border-amber-600 bg-white" : "border-amber-200 bg-amber-50 hover:bg-amber-100"
+                        }`}>
+                          <input type="radio" name={k}
+                            checked={formData.asEligibility[k] === v}
+                            onChange={() => updateNested(`asEligibility.${k}`, v)} />
+                          <span className="text-sm font-extrabold text-amber-900">{v}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+
+      const Step3 = () => (
+        <Card>
+          <SectionTitle icon="🔬" title="Histopathology" subtitle={isAS ? "Optional for Active Surveillance" : "Select tumor type"} />
+          {isAS ? (
+            <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-700">
+              For Active Surveillance, histology is usually presumed PTC microcarcinoma. You can proceed.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {HISTOLOGY_OPTIONS.map(h => (
+                <label key={h} className={`flex items-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                  formData.histology === h ? "border-purple-600 bg-purple-50" : "border-slate-200 hover:border-purple-300"
+                }`}>
+                  <input type="radio" name="histology" className="w-5 h-5"
+                    checked={formData.histology === h} onChange={() => update("histology", h)} />
+                  <span className="ml-3 font-bold text-slate-800">{h}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </Card>
+      );
+
+      const Step4 = () => (
+        <Card>
+          <SectionTitle icon="📄" title="TNM staging" subtitle={isAS ? "Skipped for Active Surveillance" : "AJCC/TNM input"} />
+          {isAS ? (
+            <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-700">
+              Active Surveillance assumes cT1aN0M0 PTC. TNM is not required.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-sm font-extrabold text-slate-700">T stage</label>
+                <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                  value={formData.tnmStaging.t} onChange={(e)=>updateNested("tnmStaging.t", e.target.value)}>
+                  <option value="">Select</option>
+                  <option value="1a">T1a (≤1 cm)</option>
+                  <option value="1b">T1b (1–2 cm)</option>
+                  <option value="2">T2 (2–4 cm)</option>
+                  <option value="3a">T3a (&gt;4 cm)</option>
+                  <option value="3b">T3b (Gross ETE)</option>
+                  <option value="4a">T4a</option>
+                  <option value="4b">T4b</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-extrabold text-slate-700">N stage</label>
+                <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                  value={formData.tnmStaging.n} onChange={(e)=>updateNested("tnmStaging.n", e.target.value)}>
+                  <option value="">Select</option>
+                  <option value="0">N0</option>
+                  <option value="1a">N1a</option>
+                  <option value="1b">N1b</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-extrabold text-slate-700">M stage</label>
+                <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                  value={formData.tnmStaging.m} onChange={(e)=>updateNested("tnmStaging.m", e.target.value)}>
+                  <option value="">Select</option>
+                  <option value="0">M0</option>
+                  <option value="1">M1</option>
+                </select>
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+
+      const Step5 = () => (
+        <Card>
+          <SectionTitle icon="☢️" title="Radioactive iodine (RAI)" subtitle={isAS ? "Skipped for Active Surveillance" : "Repeat-RAI logic included"} />
+          {isAS ? (
+            <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-700">
+              Active Surveillance pathway: no RAI decisions here.
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div>
+                <label className="text-sm font-extrabold text-slate-700">Received postoperative RAI?</label>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {["Yes","No"].map(v => (
+                    <label key={v} className={`flex items-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                      formData.receivedRAI === v ? "border-amber-600 bg-amber-50" : "border-slate-200 hover:border-amber-300"
+                    }`}>
+                      <input type="radio" name="receivedRAI" className="w-5 h-5"
+                        checked={formData.receivedRAI === v} onChange={() => update("receivedRAI", v)} />
+                      <span className="ml-3 font-bold text-slate-800">{v}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl">
+                <div className="font-extrabold text-slate-900 mb-1">Signals for response-to-therapy</div>
+                <div className="text-sm text-slate-600 mb-4">Used to classify response + trigger repeat-RAI flag.</div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-sm font-extrabold text-slate-700">Tg trend</label>
+                    <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                      value={formData.tgTrend} onChange={(e)=>update("tgTrend", e.target.value)}>
+                      <option value="">Select</option>
+                      <option value="Undetectable/Low-stable">Undetectable / Low-stable</option>
+                      <option value="Rising">Rising</option>
+                      <option value="Unknown">Unknown</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-extrabold text-slate-700">TgAb trend</label>
+                    <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                      value={formData.tgAbTrend} onChange={(e)=>update("tgAbTrend", e.target.value)}>
+                      <option value="">Select</option>
+                      <option value="Negative">Negative</option>
+                      <option value="Stable">Stable</option>
+                      <option value="Rising">Rising</option>
+                      <option value="Declining">Declining</option>
+                      <option value="Unknown">Unknown</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-extrabold text-slate-700">Structural disease present?</label>
+                    <select className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                      value={formData.structuralDisease} onChange={(e)=>update("structuralDisease", e.target.value)}>
+                      <option value="">Select</option>
+                      <option value="No">No</option>
+                      <option value="Yes">Yes</option>
+                      <option value="Uncertain">Uncertain</option>
+                    </select>
+                  </div>
+                </div>
+
+                {!isAS && formData.receivedRAI === "Yes" && computed.considerRepeatRAI && (
+                  <div className="mt-4 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-sm">
+                    <div className="font-extrabold">Repeat-RAI flag 🚩</div>
+                    <div className="mt-1">Prior RAI + persistence signals → consider <b>REPEAT RAI</b> if disease is RAI-avid.</div>
+                  </div>
+                )}
+
+                {!isAS && formData.receivedRAI === "No" && computed.considerInitialRAI && (
+                  <div className="mt-4 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm">
+                    <div className="font-extrabold">Initial RAI consideration ✅</div>
+                    <div className="mt-1">No prior RAI + intermediate-high/high risk after total thyroidectomy → consider <b>INITIAL RAI</b>.</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+
+      const Step6 = () => (
+        <Card>
+          <SectionTitle icon="🧪" title="Labs + ultrasound status" subtitle={isAS ? "Optional details for Active Surveillance" : "Minimal inputs to support response category"} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-extrabold text-slate-700">Thyroglobulin (Tg) ng/mL (optional)</label>
+              <input className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                type="number" step="0.01" value={formData.labResults.tg}
+                onChange={(e)=>setFormData(prev=>({ ...prev, labResults: { ...prev.labResults, tg: e.target.value }}))}
+                placeholder="e.g., 0.3" />
+            </div>
+            <div>
+              <label className="text-sm font-extrabold text-slate-700">TSH mIU/L (optional)</label>
+              <input className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500"
+                type="number" step="0.01" value={formData.labResults.tsh}
+                onChange={(e)=>setFormData(prev=>({ ...prev, labResults: { ...prev.labResults, tsh: e.target.value }}))}
+                placeholder="e.g., 0.1" />
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <label className="text-sm font-extrabold text-slate-700">Suspicious ultrasound finding present?</label>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {["Yes","No"].map(v => (
+                <label key={v} className={`flex items-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                  formData.suspiciousUS === v ? "border-indigo-600 bg-indigo-50" : "border-slate-200 hover:border-indigo-300"
+                }`}>
+                  <input type="radio" name="suspiciousUS" className="w-5 h-5"
+                    checked={formData.suspiciousUS === v} onChange={() => update("suspiciousUS", v)} />
+                  <span className="ml-3 font-bold text-slate-800">{v}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </Card>
+      );
+
+      const Step7 = () => (
+        <Card>
+          <SectionTitle icon="🩻" title="Ultrasound findings + review" subtitle="Quick summary before recommendation" />
+          <div>
+            <label className="text-sm font-extrabold text-slate-700">Neck ultrasound findings (free text)</label>
+            <textarea className="mt-2 w-full border-2 border-slate-200 rounded-2xl p-3 outline-none focus:border-emerald-500 min-h-[120px]"
+              value={formData.ultrasoundFindings} onChange={(e)=>update("ultrasoundFindings", e.target.value)}
+              placeholder="e.g., No suspicious LN. Small focus in thyroid bed..." />
+          </div>
+
+          <div className="mt-6 p-5 bg-slate-50 border border-slate-200 rounded-2xl">
+            <div className="font-extrabold text-slate-900 mb-3">Patient snapshot</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <div className="p-3 rounded-2xl bg-white border border-slate-200">
+                <div className="text-xs text-slate-500 font-extrabold uppercase">Age</div>
+                <div className="font-bold text-slate-900">{formData.patientAge || "—"}</div>
+              </div>
+              <div className="p-3 rounded-2xl bg-white border border-slate-200">
+                <div className="text-xs text-slate-500 font-extrabold uppercase">Approach</div>
+                <div className="font-bold text-slate-900">{isAS ? "Active Surveillance" : (formData.surgeryType || "—")}</div>
+              </div>
+              <div className="p-3 rounded-2xl bg-white border border-slate-200">
+                <div className="text-xs text-slate-500 font-extrabold uppercase">Computed</div>
+                <div className="font-bold text-slate-900">{computed.computedRiskTier} • {computed.computedResponse}</div>
+              </div>
+            </div>
+
+            {!isAS && (
+              <div className="mt-3 text-sm text-slate-700">
+                <span className="font-extrabold">RAI hint:</span>{" "}
+                {computed.considerRepeatRAI ? "Repeat RAI may be considered (if RAI-avid)." :
+                 computed.considerInitialRAI ? "Initial RAI may be considered (risk-adapted)." :
+                 "No RAI escalation flag."}
+              </div>
+            )}
+          </div>
+
+          <button onClick={generateRecommendation} disabled={loading}
+            className={`mt-6 w-full rounded-2xl px-4 py-4 font-extrabold text-white ${loading ? "bg-slate-300 text-slate-700" : "bg-gradient-to-r from-sky-500 to-indigo-500 hover:brightness-95"}`}>
+            {loading ? "Generating…" : "✅ Generate recommendation"}
+          </button>
+
+          <div className="mt-4 text-xs text-slate-500 text-center">
+            Clinical decision support only. Not a substitute for clinical judgment.
+          </div>
+        </Card>
+      );
+
+      const StepView = () => {
+        switch(step) {
+          case 1: return <Step1 />;
+          case 2: return <Step2 />;
+          case 3: return <Step3 />;
+          case 4: return <Step4 />;
+          case 5: return <Step5 />;
+          case 6: return <Step6 />;
+          case 7: return <Step7 />;
+          default: return null;
+        }
+      };
+
+      const RecommendationView = () => (
+        <div className="max-w-5xl mx-auto p-4 md:p-8">
+          <div className="bg-white rounded-3xl shadow-[0_20px_45px_rgba(15,23,42,0.10)] p-6 md:p-10">
+            <div className="flex items-start justify-between gap-4 pb-5 border-b border-slate-200">
+              <div>
+                <h2 className="text-3xl font-extrabold text-slate-900">Recommendation</h2>
+                <p className="text-slate-500 mt-1">Minimal output • print-friendly ✅</p>
+              </div>
+              <div className="flex gap-2">
+                <button className="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 font-extrabold" onClick={() => window.print()}>
+                  🖨️ Print
+                </button>
+                <button className="px-4 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 font-extrabold" onClick={resetAll}>
+                  🔄 New patient
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <pre className="whitespace-pre-wrap text-slate-800 text-base leading-relaxed font-mono">{recommendation}</pre>
+            </div>
+
+            <div className="mt-7 pt-6 border-t border-slate-200">
+              <button className="w-full px-4 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 font-extrabold"
+                onClick={() => setShowMore(!showMore)}>
+                ℹ️ {showMore ? "Hide" : "Show"} additional info (optional)
+              </button>
+
+              {showMore && (
+                <div className="mt-4 space-y-3">
+                  <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 text-sm text-slate-700">
+                    Uses ATA 2025 concepts (DATA framework, 4-tier risk, response-to-therapy, binary TSH targets).
+                    Repeat-RAI flag appears with prior RAI + biochemical/structural persistence signals.
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="p-4 rounded-2xl border border-emerald-200 bg-emerald-50">
+                      <div className="text-xs font-extrabold text-emerald-800 uppercase">Computed risk tier</div>
+                      <div className="text-lg font-extrabold text-slate-900 mt-1">{computed.computedRiskTier}</div>
+                    </div>
+                    <div className="p-4 rounded-2xl border border-indigo-200 bg-indigo-50">
+                      <div className="text-xs font-extrabold text-indigo-800 uppercase">Computed response</div>
+                      <div className="text-lg font-extrabold text-slate-900 mt-1">{computed.computedResponse}</div>
+                    </div>
+                    <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50">
+                      <div className="text-xs font-extrabold text-amber-800 uppercase">TSH target</div>
+                      <div className="text-sm font-extrabold text-slate-900 mt-1">{computed.computedTSHTarget}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+
+      if (recommendation) return <RecommendationView />;
+
+      return (
+        <div className="max-w-5xl mx-auto p-4 md:p-8">
+          <Header />
+          <Progress />
+
+          <div className="mb-6">
+            <StepView />
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              className="flex-1 px-4 py-4 rounded-2xl bg-slate-100 hover:bg-slate-200 font-extrabold disabled:opacity-50"
+              onClick={() => setStep(s => Math.max(1, s-1))}
+              disabled={step === 1}
+            >
+              ← Previous
+            </button>
+
+            <button
+              className="flex-1 px-4 py-4 rounded-2xl font-extrabold text-white disabled:opacity-60"
+              style={canProceed ? { background: "linear-gradient(90deg, #0ea5e9, #6366f1)" } : { background: "rgb(203 213 225)", color: "rgb(100 116 139)" }}
+              onClick={() => setStep(s => Math.min(totalSteps, s+1))}
+              disabled={!canProceed || step === totalSteps}
+              title={!canProceed ? "Complete required fields to continue" : ""}
+            >
+              Continue →
+            </button>
+          </div>
+
+          <div className="mt-8 text-center text-xs text-slate-500">
+            <div>MOCK mode works on GitHub Pages. LIVE mode needs a secure backend.</div>
+            <div className="mt-1">Clinical decision support only. Not a substitute for clinical judgment.</div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
